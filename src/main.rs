@@ -52,6 +52,7 @@ enum TokenKind {
 
     VarKeyword,
     IfKeyword,
+    ElseKeyword,
     TrueKeyword,
     FalseKeyword,
 
@@ -211,6 +212,7 @@ impl<'a> Tokenizer<'a> {
         match identifier {
             "var" => Some(TokenKind::VarKeyword),
             "if" => Some(TokenKind::IfKeyword),
+            "else" => Some(TokenKind::ElseKeyword),
             "true" => Some(TokenKind::TrueKeyword),
             "false" => Some(TokenKind::FalseKeyword),
             _other => None
@@ -222,7 +224,8 @@ impl<'a> Tokenizer<'a> {
 #[derive(Debug)]
 struct IfStatement {
     condition: Expression,
-    statement: Box<Statement>
+    statement: Box<Statement>,
+    else_clause: Option<Box<Statement>>
 }
 
 #[derive(Debug)]
@@ -354,7 +357,12 @@ impl<'a> Parser<'a> {
         self.expect_token(TokenKind::IfKeyword);
         let condition = self.parse_expression();
         let statement = self.parse_statement();
-        IfStatement { condition, statement: Box::new(statement) }
+        let mut else_clause = None;
+        if self.current.kind == TokenKind::ElseKeyword {
+            self.next_token();
+            else_clause = Some(Box::new(self.parse_statement()));
+        }
+        IfStatement { condition, statement: Box::new(statement), else_clause }
     }
 
     fn parse_variable_declaration(&mut self) -> VariableDeclaration {
@@ -583,12 +591,21 @@ impl<'a> Emitter<'a> {
 
     fn emit_if_statement(&mut self, statement: IfStatement) -> Option<Identifier> {
         let condition = self.emit_expression(statement.condition);
+
         self.start_function();
-        let value = self.emit_statement(*statement.statement);
+        self.emit_statement(*statement.statement);
         let func = self.end_function();
-        //execute if score @s temp matches 1.. run function testdp:load
         writeln!(self.function_stack.last_mut().unwrap(), "execute if score {} {} matches 1.. run function {}:{}", condition, self.scoreboard, self.datapack_namespace, func).unwrap();
-        value
+        
+        if let Some(else_clause) = statement.else_clause {
+            self.start_function();
+            self.emit_statement(*else_clause);
+            let else_func = self.end_function();
+            writeln!(self.function_stack.last_mut().unwrap(), "execute unless score {} {} matches 1.. run function {}:{}", condition, self.scoreboard, self.datapack_namespace, else_func).unwrap();
+        }
+
+        //execute if score @s temp matches 1.. run function testdp:load
+        None
     }
 
     fn emit_variable_declaration(&mut self, declaration: VariableDeclaration) -> Identifier {
