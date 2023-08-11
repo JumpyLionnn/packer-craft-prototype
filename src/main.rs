@@ -1,4 +1,4 @@
-use std::{str::Chars, iter::{Enumerate, Peekable}, fmt::Display, fs, io::Write, collections::HashMap};
+use std::{str::Chars, iter::{Enumerate, Peekable}, fmt::Display, fs, io::Write, collections::HashMap, path::Path};
 use std::fmt::Write as w;
 use dotenvy::dotenv;
 
@@ -24,15 +24,20 @@ fn main() {
 
         println!("{:#?}", node);
     
-        let mut output = String::new();
-        let mut emitter = Emitter::new(&mut output);
-        emitter.emit(node);
+        let mut output = HashMap::new();
+        let mut emitter = Emitter::new(&mut output, "testdp");
+        emitter.emit(node, String::from("load"));
+
     
         let output_path = std::env::var("DP_PATH").expect("Variable doesnt exist");
     
         println!("displaying output for: {src}");
-        println!("{output}");
-        fs::write(output_path, output).unwrap();
+        for (name, code) in output.iter() {
+            println!("{name}:\n{code}");
+            let mut path = String::new();
+            write!(&mut path, "{output_path}{name}.mcfunction").unwrap();
+            fs::write(path, code).unwrap();
+        }
     }
 }
 
@@ -45,6 +50,7 @@ enum TokenKind {
     Integer,
 
     VarKeyword,
+    IfKeyword,
     TrueKeyword,
     FalseKeyword,
 
@@ -203,11 +209,19 @@ impl<'a> Tokenizer<'a> {
     fn get_keyword(&self, identifier: &str) -> Option<TokenKind> {
         match identifier {
             "var" => Some(TokenKind::VarKeyword),
+            "if" => Some(TokenKind::IfKeyword),
             "true" => Some(TokenKind::TrueKeyword),
             "false" => Some(TokenKind::FalseKeyword),
             _other => None
         }
     }
+}
+
+
+#[derive(Debug)]
+struct IfStatement {
+    condition: Expression,
+    statement: Box<Statement>
 }
 
 #[derive(Debug)]
@@ -219,6 +233,7 @@ struct VariableDeclaration {
 #[derive(Debug)]
 enum Statement {
     Block(Vec<Statement>),
+    If(IfStatement),
     VariableDeclaration(VariableDeclaration),
     Expression(Expression)
 }
@@ -283,6 +298,7 @@ impl<'a> Parser<'a> {
             self.next_token()
         }
         else {
+            panic!();
             self.next_token();
             Token::from_kind(kind)
         }
@@ -312,8 +328,9 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Statement {
         match &self.current.kind {
-            TokenKind::VarKeyword => Statement::VariableDeclaration(self.parse_variable_declaration()),
             TokenKind::OpenCurlyBrace => Statement::Block(self.parse_block_statement()),
+            TokenKind::IfKeyword => Statement::If(self.parse_if_statement()),
+            TokenKind::VarKeyword => Statement::VariableDeclaration(self.parse_variable_declaration()),
             _other => Statement::Expression({
                 let exression = self.parse_expression();
                 self.expect_token(TokenKind::Semicolon);
@@ -330,6 +347,13 @@ impl<'a> Parser<'a> {
         }
         self.expect_token(TokenKind::CloseCurlyBrace);
         statements
+    }
+
+    fn parse_if_statement(&mut  self) -> IfStatement {
+        self.expect_token(TokenKind::IfKeyword);
+        let condition = self.parse_expression();
+        let statement = self.parse_statement();
+        IfStatement { condition, statement: Box::new(statement) }
     }
 
     fn parse_variable_declaration(&mut self) -> VariableDeclaration {
@@ -493,35 +517,54 @@ impl IdentifierGenerator {
 
 struct Emitter<'a> {
     identifier: IdentifierGenerator,
-    output: &'a mut String,
+    func_identifier: IdentifierGenerator,
+    output: &'a mut HashMap<String, String>,
     scoreboard: String,
-    symbols_stack: Vec<HashMap<String, Identifier>>
+    symbols_stack: Vec<HashMap<String, Identifier>>,
+    function_stack: Vec<String>,
+    datapack_namespace: &'a str
 }
 
 impl<'a> Emitter<'a> {
-    pub fn new(output: &'a mut String) -> Self {
+    pub fn new(output: &'a mut HashMap<String, String>, namespace: &'a str) -> Self {
         Self {
             identifier: IdentifierGenerator::new("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect()),
+            func_identifier: IdentifierGenerator::new("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect()),
             output,
             scoreboard: String::from("temp"),
-            symbols_stack: vec![HashMap::new()]
+            symbols_stack: vec![HashMap::new()],
+            function_stack: Vec::new(),
+            datapack_namespace: namespace
         }
     }
 
-    pub fn emit(&mut self, statements: Vec<Statement>) {
-        writeln!(*self.output, "scoreboard objectives add {name} dummy \"{name}\"", name = self.scoreboard).unwrap();
+    fn start_function(&mut self) {
+        self.function_stack.push(String::new());
+    }
+
+    fn end_function(&mut self) -> Identifier {
+        let identifier = self.func_identifier.next();
+        self.output.insert(identifier.clone().name, self.function_stack.pop().unwrap());
+        identifier
+    }
+
+    pub fn emit(&mut self, statements: Vec<Statement>, entry_name: String) {
+        self.function_stack.push(String::new());
+        writeln!(self.function_stack.last_mut().unwrap(), "scoreboard objectives add {name} dummy \"{name}\"", name = self.scoreboard).unwrap();
         let mut identifier = None;
         for statement in statements {
             identifier = self.emit_statement(statement);
         }
         if let Some(identifier) = identifier {
-            writeln!(*self.output, "tellraw @a [\"\",{{\"text\":\"The result is: \"}},{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}]", identifier, self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "tellraw @a [\"\",{{\"text\":\"The result is: \"}},{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}]", identifier, self.scoreboard).unwrap();
         }
+        self.output.insert(String::from("load"), self.function_stack.pop().unwrap());
     }
 
     fn emit_statement(&mut self, node: Statement) -> Option<Identifier> {
         match node {
             Statement::Block(block) => self.emit_block_statement(block),
+            Statement::If(statement) => self.emit_if_statement(statement),
             Statement::VariableDeclaration(declaration) => Some(self.emit_variable_declaration(declaration)),
             Statement::Expression(expression) => Some(self.emit_expression(expression)),
         }
@@ -535,6 +578,16 @@ impl<'a> Emitter<'a> {
         }
         self.symbols_stack.pop();
         identifier
+    }
+
+    fn emit_if_statement(&mut self, statement: IfStatement) -> Option<Identifier> {
+        let condition = self.emit_expression(statement.condition);
+        self.start_function();
+        let value = self.emit_statement(*statement.statement);
+        let func = self.end_function();
+        //execute if score @s temp matches 1.. run function testdp:load
+        writeln!(self.function_stack.last_mut().unwrap(), "execute if score {} {} matches 1.. run function {}:{}", condition, self.scoreboard, self.datapack_namespace, func).unwrap();
+        value
     }
 
     fn emit_variable_declaration(&mut self, declaration: VariableDeclaration) -> Identifier {
@@ -561,7 +614,7 @@ impl<'a> Emitter<'a> {
     fn emit_assignment_expression(&mut self, assignment: AssignmentExpression) -> Identifier {
         let expression = self.emit_expression(*assignment.expression);
         let var_identifier = self.lookup_symbol(&assignment.identifier).unwrap();
-        writeln!(self.output, "scoreboard players operation {} {name} = {} {name}", var_identifier, expression, name=self.scoreboard).unwrap();
+        writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players operation {} {name} = {} {name}", var_identifier, expression, name=self.scoreboard).unwrap();
         expression
     }
 
@@ -577,7 +630,7 @@ impl<'a> Emitter<'a> {
                 TokenKind::Slash => "/=",
                 _other => panic!()
             };
-            writeln!(*self.output, "scoreboard players operation {} {name} {} {} {name}", left, operation, right, name = self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players operation {} {name} {} {} {name}", left, operation, right, name = self.scoreboard).unwrap();
             left
         }
         else if is_relational_operator(&expression.operator.kind) {
@@ -588,8 +641,8 @@ impl<'a> Emitter<'a> {
                 _other => panic!()
             };
             let identifier = self.identifier.next();
-            writeln!(*self.output, "execute if score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 1 ", operation, right, name = self.scoreboard).unwrap();
-            writeln!(*self.output, "execute unless score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 0 ", operation, right, name = self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "execute if score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 1 ", operation, right, name = self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "execute unless score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 0 ", operation, right, name = self.scoreboard).unwrap();
             identifier
         }
         else {
@@ -601,15 +654,15 @@ impl<'a> Emitter<'a> {
         if unary.operator.kind == TokenKind::Minus {
             let expression = self.emit_expression(*unary.operand);
             let result = self.identifier.next();
-            writeln!(self.output, "scoreboard players reset {} {}", result, self.scoreboard).unwrap();
-            writeln!(self.output, "scoreboard players operation {} {name} -= {} {name}", result, expression, name=self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players reset {} {}", result, self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players operation {} {name} -= {} {name}", result, expression, name=self.scoreboard).unwrap();
             result
         }
         else if unary.operator.kind == TokenKind::ExclamationMark {
             let expression = self.emit_expression(*unary.operand);
             let result = self.identifier.next();
-            writeln!(self.output, "execute if score {} {name} matches 1.. run scoreboard players set {} {name} 0", expression, result, name=self.scoreboard).unwrap();
-            writeln!(self.output, "execute if score {} {name} matches 0 run scoreboard players set {} {name} 1", expression, result, name=self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "execute if score {} {name} matches 1.. run scoreboard players set {} {name} 0", expression, result, name=self.scoreboard).unwrap();
+            writeln!(self.function_stack.last_mut().unwrap(), "execute if score {} {name} matches 0 run scoreboard players set {} {name} 1", expression, result, name=self.scoreboard).unwrap();
             result
         }
         else {
@@ -619,14 +672,14 @@ impl<'a> Emitter<'a> {
 
     fn emit_int(&mut self, value: i32) -> Identifier {
         let identifier = self.identifier.next();
-        writeln!(*self.output, "scoreboard players set {} {} {}", identifier, self.scoreboard, value).unwrap();
+        writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players set {} {} {}", identifier, self.scoreboard, value).unwrap();
         identifier
     }
 
     fn emit_name(&mut self, name: String) -> Identifier{
         let var_identifier = self.lookup_symbol(&name).unwrap();
         let identifier = self.identifier.next();
-        writeln!(*self.output, "scoreboard players operation {} {name} = {} {name}", identifier, var_identifier, name =  self.scoreboard).unwrap();
+        writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players operation {} {name} = {} {name}", identifier, var_identifier, name =  self.scoreboard).unwrap();
         identifier
     }
 
