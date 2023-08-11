@@ -1,15 +1,16 @@
-use std::{str::Chars, iter::{Enumerate, Peekable}, fmt::Display, fs, io::Write, collections::HashMap, path::Path};
+use std::{str::Chars, iter::{Enumerate, Peekable}, fmt::Display, fs, collections::HashMap};
 use std::fmt::Write as w;
 use dotenvy::dotenv;
 
 fn main() {
     dotenv().expect(".env file not found");
 
-    loop {
-        let mut src = String::new();
-        print!(">>> ");
-        std::io::stdout().flush().unwrap();
-        std::io::stdin().read_line(&mut src).unwrap();
+    //loop {
+        // let mut src = String::new();
+        // print!(">>> ");
+        // std::io::stdout().flush().unwrap();
+        // std::io::stdin().read_line(&mut src).unwrap();
+        let src = fs::read_to_string("example.mc").unwrap();
         let mut tokenizer = Tokenizer::new(&src);
     
         let mut tokens = Vec::new();
@@ -39,7 +40,7 @@ fn main() {
             fs::write(path, code).unwrap();
         }
     }
-}
+//}
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -299,8 +300,8 @@ impl<'a> Parser<'a> {
         }
         else {
             panic!();
-            self.next_token();
-            Token::from_kind(kind)
+            // self.next_token();
+            // Token::from_kind(kind)
         }
     }
 
@@ -558,7 +559,7 @@ impl<'a> Emitter<'a> {
         if let Some(identifier) = identifier {
             writeln!(self.function_stack.last_mut().unwrap(), "tellraw @a [\"\",{{\"text\":\"The result is: \"}},{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}]", identifier, self.scoreboard).unwrap();
         }
-        self.output.insert(String::from("load"), self.function_stack.pop().unwrap());
+        self.output.insert(entry_name, self.function_stack.pop().unwrap());
     }
 
     fn emit_statement(&mut self, node: Statement) -> Option<Identifier> {
