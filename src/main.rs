@@ -72,6 +72,7 @@ enum TokenKind {
     OpenCurlyBrace,
     CloseCurlyBrace,
 
+    Comma,
     Semicolon,
     EndOfFile,
 }
@@ -167,6 +168,7 @@ impl<'a> Tokenizer<'a> {
                     ')' => Token::from_kind(TokenKind::CloseParenthesis),
                     '{' => Token::from_kind(TokenKind::OpenCurlyBrace),
                     '}' => Token::from_kind(TokenKind::CloseCurlyBrace),
+                    ',' => Token::from_kind(TokenKind::Comma),
                     ';' => Token::from_kind(TokenKind::Semicolon),
                     '0'..='9' => {
                         let start_index = index;
@@ -263,12 +265,18 @@ struct AssignmentExpression {
     expression: Box<Expression>
 }
 
+#[derive(Debug)]
+struct CallExpression {
+    func_name: String,
+    arguments: Vec<Expression>
+}
 
 #[derive(Debug)]
 enum Expression {
     Binary(BinaryExpression),
     Unary(UnaryExpression),
     Assignment(AssignmentExpression),
+    Call(CallExpression),
     Name(String),
     Number(i32),
     Boolean(bool)
@@ -453,15 +461,43 @@ impl<'a> Parser<'a> {
             TokenKind::FalseKeyword => {
                 Expression::Boolean(false)
             },
-            TokenKind::Identifier => {
-                let identifier = self.expect_token(TokenKind::Identifier);
-                Expression::Name(identifier.value.unwrap_or(Value::Identifier(String::from(""))).get_identifier_or_default().to_string())
-            },
+            TokenKind::Identifier => self.parse_name_or_call_expression(),
             _other => {
                 panic!("unexpected token {:?}", _other);
             }
         }
         
+    }
+
+    fn parse_name_or_call_expression(&mut self) -> Expression {
+        if self.peek(1).kind == TokenKind::OpenParenthesis {
+            self.parse_call_expression()
+        }
+        else {
+            self.parse_name_expression()
+        }
+    }
+
+    fn parse_call_expression(&mut self) -> Expression {
+        let identifier = self.expect_token(TokenKind::Identifier);
+        self.expect_token(TokenKind::OpenParenthesis);
+        let mut arguments = Vec::new();
+        while self.current.kind != TokenKind::CloseParenthesis && self.current.kind != TokenKind::EndOfFile {
+            arguments.push(self.parse_expression());
+            if self.current.kind != TokenKind::CloseParenthesis && self.current.kind != TokenKind::EndOfFile {
+                self.expect_token(TokenKind::Comma);
+            }
+        }
+        self.expect_token(TokenKind::CloseParenthesis);
+        Expression::Call(CallExpression { 
+            func_name: identifier.value.unwrap_or(Value::Identifier(String::from(""))).get_identifier_or_default().to_string(), 
+            arguments 
+        })
+    }
+
+    fn parse_name_expression(&mut self) -> Expression {
+        let identifier = self.expect_token(TokenKind::Identifier);
+        Expression::Name(identifier.value.unwrap_or(Value::Identifier(String::from(""))).get_identifier_or_default().to_string())
     }
 
     fn get_binary_operator_precedence(&self, kind: &TokenKind) -> u32 {
@@ -603,8 +639,6 @@ impl<'a> Emitter<'a> {
             let else_func = self.end_function();
             writeln!(self.function_stack.last_mut().unwrap(), "execute unless score {} {} matches 1.. run function {}:{}", condition, self.scoreboard, self.datapack_namespace, else_func).unwrap();
         }
-
-        //execute if score @s temp matches 1.. run function testdp:load
         None
     }
 
@@ -621,6 +655,7 @@ impl<'a> Emitter<'a> {
             Expression::Binary(binary) => self.emit_binary_expression(binary),
             Expression::Unary(unary) => self.emit_unary_expression(unary),
             Expression::Number(value) => self.emit_int(value),
+            Expression::Call(call) => self.emit_call_expression(call),
             Expression::Name(name) => self.emit_name(name),
             Expression::Boolean(value) => {
                 let value = if value {1} else {0};
@@ -692,6 +727,27 @@ impl<'a> Emitter<'a> {
         let identifier = self.identifier.next();
         writeln!(self.function_stack.last_mut().unwrap(), "scoreboard players set {} {} {}", identifier, self.scoreboard, value).unwrap();
         identifier
+    }
+
+    fn emit_call_expression(&mut self, call: CallExpression) -> Identifier {
+        let arguments = call.arguments.into_iter().map(|expression| {
+            self.emit_expression(expression)
+        }).collect::<Vec<Identifier>>();
+
+        match &call.func_name[..] {
+            "log" => {
+                assert!(arguments.len() > 0);
+                write!(self.function_stack.last_mut().unwrap(), "tellraw @a [\"\",{{\"text\":\"[{}][log] \"}}", self.datapack_namespace).unwrap();
+                for argument in arguments {
+                    write!(self.function_stack.last_mut().unwrap(), ",{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}, {{\"text\":\" \"}}", argument, self.scoreboard).unwrap();
+                }
+                write!(self.function_stack.last_mut().unwrap(), "]\n").unwrap();
+                self.emit_int(0)
+            },
+            _other => {
+                panic!();
+            }
+        }
     }
 
     fn emit_name(&mut self, name: String) -> Identifier{
