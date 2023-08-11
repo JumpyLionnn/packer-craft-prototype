@@ -45,12 +45,18 @@ enum TokenKind {
     Integer,
 
     VarKeyword,
+    TrueKeyword,
+    FalseKeyword,
 
     Plus,
     Minus,
     Star,
     Slash,
     Equal,
+
+    EqualEqual,
+    GreatedThan,
+    LessThan,
 
     OpenParenthesis,
     CloseParenthesis,
@@ -134,7 +140,17 @@ impl<'a> Tokenizer<'a> {
                     '-' => Token::from_kind(TokenKind::Minus),
                     '*' => Token::from_kind(TokenKind::Star),
                     '/' => Token::from_kind(TokenKind::Slash),
-                    '=' => Token::from_kind(TokenKind::Equal),
+                    '=' => {
+                        if self.it.peek().is_some_and(|(_index, c)| *c == '=') {
+                            self.it.next();
+                            Token::from_kind(TokenKind::EqualEqual)
+                        }
+                        else {
+                            Token::from_kind(TokenKind::Equal)
+                        }
+                    },
+                    '>' => Token::from_kind(TokenKind::GreatedThan),
+                    '<' => Token::from_kind(TokenKind::LessThan),
                     '(' => Token::from_kind(TokenKind::OpenParenthesis),
                     ')' => Token::from_kind(TokenKind::CloseParenthesis),
                     ';' => Token::from_kind(TokenKind::Semicolon),
@@ -181,6 +197,8 @@ impl<'a> Tokenizer<'a> {
     fn get_keyword(&self, identifier: &str) -> Option<TokenKind> {
         match identifier {
             "var" => Some(TokenKind::VarKeyword),
+            "true" => Some(TokenKind::TrueKeyword),
+            "false" => Some(TokenKind::FalseKeyword),
             _other => None
         }
     }
@@ -218,7 +236,8 @@ enum Expression {
     Binary(BinaryExpression),
     Assignment(AssignmentExpression),
     Name(String),
-    Number(i32)
+    Number(i32),
+    Boolean(bool)
 }
 
 struct Parser<'a> {
@@ -355,6 +374,12 @@ impl<'a> Parser<'a> {
                 let number_token = self.expect_token(TokenKind::Integer);
                 Expression::Number(number_token.value.unwrap_or(Value::Int(0)).get_int_or_default())
             },
+            TokenKind::TrueKeyword => {
+                Expression::Boolean(true)
+            },
+            TokenKind::FalseKeyword => {
+                Expression::Boolean(false)
+            },
             TokenKind::Identifier => {
                 let identifier = self.expect_token(TokenKind::Identifier);
                 Expression::Name(identifier.value.unwrap_or(Value::Identifier(String::from(""))).get_identifier_or_default().to_string())
@@ -372,6 +397,9 @@ impl<'a> Parser<'a> {
             TokenKind::Slash => 2,
             TokenKind::Plus |
             TokenKind::Minus => 1,
+            TokenKind::GreatedThan |
+            TokenKind::LessThan => 1,
+            TokenKind::EqualEqual => 1,
             _other => 0
         }
     }
@@ -467,6 +495,10 @@ impl<'a> Emitter<'a> {
             Expression::Binary(binary) => self.emit_binary_expression(binary),
             Expression::Number(value) => self.emit_int(value),
             Expression::Name(name) => self.emit_name(name),
+            Expression::Boolean(value) => {
+                let value = if value {1} else {0};
+                self.emit_int(value)
+            },
         }
     }
 
@@ -481,15 +513,34 @@ impl<'a> Emitter<'a> {
         let left = self.emit_expression(*expression.left);
         let right = self.emit_expression(*expression.right);
 
-        let operation = match expression.operator.kind {
-            TokenKind::Plus => "+=",
-            TokenKind::Minus => "-=",
-            TokenKind::Star => "*=",
-            TokenKind::Slash => "/=",
-            _other => panic!()
-        };
-        writeln!(*self.output, "scoreboard players operation {} {name} {} {} {name}", left, operation, right, name = self.scoreboard).unwrap();
-        left
+        if is_arithmitic_operator(&expression.operator.kind) {
+            let operation = match expression.operator.kind {
+                TokenKind::Plus => "+=",
+                TokenKind::Minus => "-=",
+                TokenKind::Star => "*=",
+                TokenKind::Slash => "/=",
+                _other => panic!()
+            };
+            writeln!(*self.output, "scoreboard players operation {} {name} {} {} {name}", left, operation, right, name = self.scoreboard).unwrap();
+            left
+        }
+        else if is_relational_operator(&expression.operator.kind) {
+            let operation = match expression.operator.kind {
+                TokenKind::EqualEqual => "=",
+                TokenKind::GreatedThan => ">",
+                TokenKind::LessThan => "<",
+                _other => panic!()
+            };
+            //execute if score a temp > b temp run say hi
+            //scoreboard players set a temp 1
+            let identifier = self.identifier.next();
+            writeln!(*self.output, "execute if score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 1 ", operation, right, name = self.scoreboard).unwrap();
+            writeln!(*self.output, "execute unless score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 0 ", operation, right, name = self.scoreboard).unwrap();
+            identifier
+        }
+        else {
+            panic!("unknown operator");
+        }
     }
 
     fn emit_int(&mut self, value: i32) -> Identifier {
@@ -504,4 +555,12 @@ impl<'a> Emitter<'a> {
         writeln!(*self.output, "scoreboard players operation {} {name} = {} {name}", identifier, var_identifier, name =  self.scoreboard).unwrap();
         identifier
     }
+}
+
+fn is_arithmitic_operator(kind: &TokenKind) -> bool {
+    *kind == TokenKind::Plus || *kind == TokenKind::Minus || *kind == TokenKind::Star || *kind == TokenKind::Slash
+}
+
+fn is_relational_operator(kind: &TokenKind) -> bool {
+    *kind == TokenKind::EqualEqual || *kind == TokenKind::GreatedThan || *kind == TokenKind::LessThan
 }
