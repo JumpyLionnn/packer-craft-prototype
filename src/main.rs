@@ -57,6 +57,7 @@ enum TokenKind {
     EqualEqual,
     GreatedThan,
     LessThan,
+    ExclamationMark,
 
     OpenParenthesis,
     CloseParenthesis,
@@ -151,6 +152,7 @@ impl<'a> Tokenizer<'a> {
                     },
                     '>' => Token::from_kind(TokenKind::GreatedThan),
                     '<' => Token::from_kind(TokenKind::LessThan),
+                    '!' => Token::from_kind(TokenKind::ExclamationMark),
                     '(' => Token::from_kind(TokenKind::OpenParenthesis),
                     ')' => Token::from_kind(TokenKind::CloseParenthesis),
                     ';' => Token::from_kind(TokenKind::Semicolon),
@@ -225,6 +227,13 @@ struct BinaryExpression {
 }
 
 #[derive(Debug)]
+struct UnaryExpression {
+    operator: Token,
+    operand: Box<Expression>
+}
+
+
+#[derive(Debug)]
 struct AssignmentExpression {
     identifier: String,
     expression: Box<Expression>
@@ -234,6 +243,7 @@ struct AssignmentExpression {
 #[derive(Debug)]
 enum Expression {
     Binary(BinaryExpression),
+    Unary(UnaryExpression),
     Assignment(AssignmentExpression),
     Name(String),
     Number(i32),
@@ -339,11 +349,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_binary_expression_inner(&mut self, parent_precedence: u32, left: Option<Expression>) -> Expression {
-        let mut left = left.unwrap_or_else(|| self.parse_primary_expression());
+        let mut left = left.unwrap_or_else(|| self.parse_unary_or_primary_expression());
         let mut precedence = self.get_binary_operator_precedence(&self.current.kind);
         while precedence > parent_precedence && precedence != 0 {
             let operator_token = self.next_token();
-            let right = self.parse_primary_expression();
+            let right = self.parse_unary_or_primary_expression();
             let next_precedence = self.get_binary_operator_precedence(&self.current.kind);
             if next_precedence > precedence {
                 let right = self.parse_binary_expression_inner(precedence, Some(right));
@@ -360,6 +370,20 @@ impl<'a> Parser<'a> {
             
         }
         left
+    }
+
+    fn parse_unary_or_primary_expression(&mut self) -> Expression {
+        if self.is_unary_operator(&self.current.kind) {
+            let operator = self.next_token();
+            let expression = self.parse_unary_or_primary_expression();
+            Expression::Unary(UnaryExpression { 
+                operator, 
+                operand: Box::new(expression) 
+            })
+        }
+        else {
+            self.parse_primary_expression()
+        }
     }
 
     fn parse_primary_expression(&mut self) -> Expression {
@@ -402,6 +426,10 @@ impl<'a> Parser<'a> {
             TokenKind::EqualEqual => 1,
             _other => 0
         }
+    }
+
+    fn is_unary_operator(&self, kind: &TokenKind) -> bool {
+        *kind == TokenKind::Minus || *kind == TokenKind::Plus || *kind == TokenKind::ExclamationMark
     }
 }
 
@@ -493,6 +521,7 @@ impl<'a> Emitter<'a> {
         match node {
             Expression::Assignment(assignment) => self.emit_assignment_expression(assignment),
             Expression::Binary(binary) => self.emit_binary_expression(binary),
+            Expression::Unary(unary) => self.emit_unary_expression(unary),
             Expression::Number(value) => self.emit_int(value),
             Expression::Name(name) => self.emit_name(name),
             Expression::Boolean(value) => {
@@ -531,8 +560,6 @@ impl<'a> Emitter<'a> {
                 TokenKind::LessThan => "<",
                 _other => panic!()
             };
-            //execute if score a temp > b temp run say hi
-            //scoreboard players set a temp 1
             let identifier = self.identifier.next();
             writeln!(*self.output, "execute if score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 1 ", operation, right, name = self.scoreboard).unwrap();
             writeln!(*self.output, "execute unless score {left} {name} {} {} {name} run scoreboard players set {identifier} {name} 0 ", operation, right, name = self.scoreboard).unwrap();
@@ -540,6 +567,26 @@ impl<'a> Emitter<'a> {
         }
         else {
             panic!("unknown operator");
+        }
+    }
+
+    fn emit_unary_expression(&mut self, unary: UnaryExpression) -> Identifier {
+        if unary.operator.kind == TokenKind::Minus {
+            let expression = self.emit_expression(*unary.operand);
+            let result = self.identifier.next();
+            writeln!(self.output, "scoreboard players reset {} {}", result, self.scoreboard).unwrap();
+            writeln!(self.output, "scoreboard players operation {} {name} -= {} {name}", result, expression, name=self.scoreboard).unwrap();
+            result
+        }
+        else if unary.operator.kind == TokenKind::ExclamationMark {
+            let expression = self.emit_expression(*unary.operand);
+            let result = self.identifier.next();
+            writeln!(self.output, "execute if score {} {name} matches 1.. run scoreboard players set {} {name} 0", expression, result, name=self.scoreboard).unwrap();
+            writeln!(self.output, "execute if score {} {name} matches 0 run scoreboard players set {} {name} 1", expression, result, name=self.scoreboard).unwrap();
+            result
+        }
+        else {
+            self.emit_expression(*unary.operand)
         }
     }
 
