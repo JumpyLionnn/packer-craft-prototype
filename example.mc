@@ -5,4 +5,4 @@ if a == 100 {
 else {
     a = 8;
 }
-log(a, a + 8);
+log(a, " test ", a + 8);

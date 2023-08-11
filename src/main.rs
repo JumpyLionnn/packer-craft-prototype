@@ -49,6 +49,7 @@ enum TokenKind {
 
     Identifier,
     Integer,
+    String,
 
     VarKeyword,
     IfKeyword,
@@ -80,7 +81,8 @@ enum TokenKind {
 #[derive(Debug, Clone)]
 enum Value {
     Int(i32),
-    Identifier(String)
+    Identifier(String),
+    String(String)
 }
 
 impl Value {
@@ -95,6 +97,15 @@ impl Value {
 
     pub fn get_identifier_or_default(&self) -> &str {
         if let Self::Identifier(value) = self {
+            value
+        }
+        else {
+            ""
+        }
+    }
+
+    pub fn get_string_or_default(&self) -> &str {
+        if let Self::String(value) = self {
             value
         }
         else {
@@ -128,6 +139,13 @@ impl Token {
         Self {
             kind: TokenKind::Identifier,
             value: Some(Value::Identifier(identifier.to_string()))
+        }
+    }
+
+    fn from_string(value: String) -> Self {
+        Self {
+            kind: TokenKind::String,
+            value: Some(Value::String(value))
         }
     }
 }
@@ -193,6 +211,16 @@ impl<'a> Tokenizer<'a> {
                         else {
                             Token::from_identifier(identifier)
                         }
+                    },
+                    '"' => {
+                        let start_index = index;
+                        while self.it.peek().is_some_and(|(_index, c)| *c != '"') {
+                            (index, _) = self.it.next().unwrap();
+                        }
+                        self.it.next();
+                        let end_index = index;
+                        let value = &self.text[start_index + 1..=end_index];
+                        Token::from_string(value.to_string())
                     },
                     _ if c.is_whitespace() => {
                         while self.it.peek().is_some_and(|(_index, c)| c.is_whitespace()) {
@@ -279,7 +307,8 @@ enum Expression {
     Call(CallExpression),
     Name(String),
     Number(i32),
-    Boolean(bool)
+    Boolean(bool),
+    String(String)
 }
 
 struct Parser<'a> {
@@ -310,7 +339,7 @@ impl<'a> Parser<'a> {
             self.next_token()
         }
         else {
-            panic!();
+            panic!("expected {:?} found token {:?}", kind, self.current.kind);
             // self.next_token();
             // Token::from_kind(kind)
         }
@@ -461,6 +490,10 @@ impl<'a> Parser<'a> {
             TokenKind::FalseKeyword => {
                 Expression::Boolean(false)
             },
+            TokenKind::String => {
+                let string_token = self.expect_token(TokenKind::String);
+                Expression::String(string_token.value.unwrap_or(Value::Int(0)).get_string_or_default().to_owned())
+            },
             TokenKind::Identifier => self.parse_name_or_call_expression(),
             _other => {
                 panic!("unexpected token {:?}", _other);
@@ -484,6 +517,7 @@ impl<'a> Parser<'a> {
         let mut arguments = Vec::new();
         while self.current.kind != TokenKind::CloseParenthesis && self.current.kind != TokenKind::EndOfFile {
             arguments.push(self.parse_expression());
+            println!("argument {:?}", arguments.last());
             if self.current.kind != TokenKind::CloseParenthesis && self.current.kind != TokenKind::EndOfFile {
                 self.expect_token(TokenKind::Comma);
             }
@@ -660,6 +694,7 @@ impl<'a> Emitter<'a> {
                 let value = if value {1} else {0};
                 self.emit_int(value)
             },
+            Expression::String(_) => unimplemented!(),
         }
     }
 
@@ -729,18 +764,29 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_call_expression(&mut self, call: CallExpression) -> Identifier {
-        let arguments = call.arguments.into_iter().map(|expression| {
-            self.emit_expression(expression)
-        }).collect::<Vec<Identifier>>();
+        // let arguments = call.arguments.into_iter().map(|expression| {
+        //     self.emit_expression(expression)
+        // }).collect::<Vec<Identifier>>();
 
         match &call.func_name[..] {
             "log" => {
-                assert!(arguments.len() > 0);
-                write!(self.function_stack.last_mut().unwrap(), "tellraw @a [\"\",{{\"text\":\"[{}][log] \"}}", self.datapack_namespace).unwrap();
-                for argument in arguments {
-                    write!(self.function_stack.last_mut().unwrap(), ",{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}, {{\"text\":\" \"}}", argument, self.scoreboard).unwrap();
-                }
-                write!(self.function_stack.last_mut().unwrap(), "]\n").unwrap();
+                assert!(call.arguments.len() > 0);
+                let mut command = String::new();
+                write!(command, "tellraw @a [\"\",{{\"text\":\"[{}][log] \"}}", self.datapack_namespace).unwrap();
+                call.arguments.into_iter().for_each(|expression| {
+                    if let Expression::String(text) = expression {
+                        write!(command, ",{{\"text\":\"{}\"}}", text).unwrap();
+                    }
+                    else {
+                        let argument = self.emit_expression(expression);
+                        write!(command, ",{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}", argument, self.scoreboard).unwrap();
+                    }
+                });
+                // for argument in arguments {
+                //     write!(self.function_stack.last_mut().unwrap(), ",{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}, {{\"text\":\" \"}}", argument, self.scoreboard).unwrap();
+                // }
+                write!(command, "]").unwrap();
+                writeln!(self.function_stack.last_mut().unwrap(), "{}", command).unwrap();
                 self.emit_int(0)
             },
             _other => {
