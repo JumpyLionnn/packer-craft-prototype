@@ -61,6 +61,8 @@ enum TokenKind {
 
     OpenParenthesis,
     CloseParenthesis,
+    OpenCurlyBrace,
+    CloseCurlyBrace,
 
     Semicolon,
     EndOfFile,
@@ -155,6 +157,8 @@ impl<'a> Tokenizer<'a> {
                     '!' => Token::from_kind(TokenKind::ExclamationMark),
                     '(' => Token::from_kind(TokenKind::OpenParenthesis),
                     ')' => Token::from_kind(TokenKind::CloseParenthesis),
+                    '{' => Token::from_kind(TokenKind::OpenCurlyBrace),
+                    '}' => Token::from_kind(TokenKind::CloseCurlyBrace),
                     ';' => Token::from_kind(TokenKind::Semicolon),
                     '0'..='9' => {
                         let start_index = index;
@@ -214,6 +218,7 @@ struct VariableDeclaration {
 
 #[derive(Debug)]
 enum Statement {
+    Block(Vec<Statement>),
     VariableDeclaration(VariableDeclaration),
     Expression(Expression)
 }
@@ -308,12 +313,23 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self) -> Statement {
         match &self.current.kind {
             TokenKind::VarKeyword => Statement::VariableDeclaration(self.parse_variable_declaration()),
+            TokenKind::OpenCurlyBrace => Statement::Block(self.parse_block_statement()),
             _other => Statement::Expression({
                 let exression = self.parse_expression();
                 self.expect_token(TokenKind::Semicolon);
                 exression
             })
         }
+    }
+
+    fn parse_block_statement(&mut self) -> Vec<Statement> {
+        let mut statements = Vec::new();
+        self.expect_token(TokenKind::OpenCurlyBrace);
+        while self.current.kind != TokenKind::CloseCurlyBrace && self.current.kind != TokenKind::EndOfFile {
+            statements.push(self.parse_statement());
+        }
+        self.expect_token(TokenKind::CloseCurlyBrace);
+        statements
     }
 
     fn parse_variable_declaration(&mut self) -> VariableDeclaration {
@@ -479,7 +495,7 @@ struct Emitter<'a> {
     identifier: IdentifierGenerator,
     output: &'a mut String,
     scoreboard: String,
-    symbols: HashMap<String, Identifier>
+    symbols_stack: Vec<HashMap<String, Identifier>>
 }
 
 impl<'a> Emitter<'a> {
@@ -488,7 +504,7 @@ impl<'a> Emitter<'a> {
             identifier: IdentifierGenerator::new("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect()),
             output,
             scoreboard: String::from("temp"),
-            symbols: HashMap::new()
+            symbols_stack: vec![HashMap::new()]
         }
     }
 
@@ -496,24 +512,35 @@ impl<'a> Emitter<'a> {
         writeln!(*self.output, "scoreboard objectives add {name} dummy \"{name}\"", name = self.scoreboard).unwrap();
         let mut identifier = None;
         for statement in statements {
-            identifier = Some(self.emit_statement(statement));
+            identifier = self.emit_statement(statement);
         }
         if let Some(identifier) = identifier {
             writeln!(*self.output, "tellraw @a [\"\",{{\"text\":\"The result is: \"}},{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}]", identifier, self.scoreboard).unwrap();
         }
     }
 
-    fn emit_statement(&mut self, node: Statement) -> Identifier {
+    fn emit_statement(&mut self, node: Statement) -> Option<Identifier> {
         match node {
-            Statement::VariableDeclaration(declaration) => self.emit_variable_declaration(declaration),
-            Statement::Expression(expression) => self.emit_expression(expression),
+            Statement::Block(block) => self.emit_block_statement(block),
+            Statement::VariableDeclaration(declaration) => Some(self.emit_variable_declaration(declaration)),
+            Statement::Expression(expression) => Some(self.emit_expression(expression)),
         }
+    }
+    
+    fn emit_block_statement(&mut self, block: Vec<Statement>) -> Option<Identifier> {
+        self.symbols_stack.push(HashMap::new());
+        let mut identifier = None;
+        for statement in block {
+            identifier = self.emit_statement(statement);
+        }
+        self.symbols_stack.pop();
+        identifier
     }
 
     fn emit_variable_declaration(&mut self, declaration: VariableDeclaration) -> Identifier {
         let identifier = self.emit_expression(declaration.expression);
         println!("var identifier {identifier}");
-        self.symbols.insert(declaration.identifier, identifier.clone());
+        self.symbols_stack.last_mut().unwrap().insert(declaration.identifier, identifier.clone());
         identifier
     }
     
@@ -533,7 +560,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_assignment_expression(&mut self, assignment: AssignmentExpression) -> Identifier {
         let expression = self.emit_expression(*assignment.expression);
-        let var_identifier = self.symbols.get(&assignment.identifier).unwrap();
+        let var_identifier = self.lookup_symbol(&assignment.identifier).unwrap();
         writeln!(self.output, "scoreboard players operation {} {name} = {} {name}", var_identifier, expression, name=self.scoreboard).unwrap();
         expression
     }
@@ -597,11 +624,23 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_name(&mut self, name: String) -> Identifier{
-        let var_identifier = self.symbols.get(&name).unwrap();
+        let var_identifier = self.lookup_symbol(&name).unwrap();
         let identifier = self.identifier.next();
         writeln!(*self.output, "scoreboard players operation {} {name} = {} {name}", identifier, var_identifier, name =  self.scoreboard).unwrap();
         identifier
     }
+
+    fn lookup_symbol(&self, name: &String) -> Option<Identifier> {
+        let mut identifier = None;
+        for frame in self.symbols_stack.iter().rev() {
+            identifier = frame.get(name);
+            if identifier.is_some() {
+                break;
+            }
+        }
+        identifier.cloned()
+    }
+
 }
 
 fn is_arithmitic_operator(kind: &TokenKind) -> bool {
