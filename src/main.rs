@@ -27,7 +27,7 @@ fn main() {
     
         let mut output = HashMap::new();
         let mut emitter = Emitter::new(&mut output, "testdp");
-        emitter.emit(node, String::from("load"));
+        emitter.emit(node, String::from("load"), String::from("tick"));
 
     
         let output_path = std::env::var("DP_PATH").expect("Variable doesnt exist");
@@ -593,17 +593,16 @@ impl<'a> Emitter<'a> {
         identifier
     }
 
-    pub fn emit(&mut self, statements: Vec<Statement>, entry_name: String) {
+    pub fn emit(&mut self, statements: Vec<Statement>, load_name: String, tick_name: String) {
         self.function_stack.push(String::new());
         writeln!(self.function_stack.last_mut().unwrap(), "scoreboard objectives add {name} dummy \"{name}\"", name = self.scoreboard).unwrap();
-        let mut identifier = None;
+        self.output.insert(load_name, self.function_stack.pop().unwrap());
+
+        self.function_stack.push(String::new());
         for statement in statements {
-            identifier = self.emit_statement(statement);
+            self.emit_statement(statement);
         }
-        if let Some(identifier) = identifier {
-            writeln!(self.function_stack.last_mut().unwrap(), "tellraw @a [\"\",{{\"text\":\"The result is: \"}},{{\"score\":{{\"name\":\"{}\",\"objective\":\"{}\"}}}}]", identifier, self.scoreboard).unwrap();
-        }
-        self.output.insert(entry_name, self.function_stack.pop().unwrap());
+        self.output.insert(tick_name, self.function_stack.pop().unwrap());
     }
 
     fn emit_statement(&mut self, node: Statement) -> Option<Identifier> {
